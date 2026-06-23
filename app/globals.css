@@ -95,8 +95,8 @@ html, body {
 }
 
 .btn-primary:active {
-  opacity: 0.85;
-  transform: scale(0.97);
+  transform: scale(1.12);
+  transition: transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
 }
 
 .btn-primary:disabled {
