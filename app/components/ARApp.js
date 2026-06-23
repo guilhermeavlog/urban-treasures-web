@@ -1,13 +1,15 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
+import * as THREE from 'three'
 import { requestAllPermissions } from '@/lib/ui/permissions'
 import { startCompass, startGPS, state as sensorState } from '@/lib/ar/sensors'
 import { attachCamera } from '@/lib/ar/camera'
-import { initRenderer, startRenderLoop, setSpawnPoint, placeBanner, getBannerDebug, setArrowTarget, getArrowTarget } from '@/lib/ar/renderer'
+import { initRenderer, startRenderLoop, setSpawnPoint, placeBanner, getBannerDebug, setArrowTarget, getArrowTarget, getVisitedMap, setRoutePath, initAudio, setMuted, isMuted } from '@/lib/ar/renderer'
 import { initHUD, startHUDLoop } from '@/lib/ar/renderer2d'
 import { parseCSV } from '@/lib/csv'
 import { getDistance } from '@/lib/geo/bearing'
+import { getWalkingRoute } from '@/lib/geo/routing'
 
 export default function ARApp() {
   const videoRef   = useRef(null)
@@ -15,10 +17,15 @@ export default function ARApp() {
   const hudRef     = useRef(null)
   const [screen, setScreen] = useState('permissions')
   const [btnDisabled, setBtnDisabled] = useState(false)
-  const [btnText, setBtnText] = useState('Grant access & start')
+  const [btnText, setBtnText] = useState('Start exploring')
   const [permStatus, setPermStatus] = useState('')
   const [nearbyMurals, setNearbyMurals] = useState([])
   const [selectedMural, setSelectedMural] = useState(null)
+  const [muted, setMutedState] = useState(false)
+  const [nearbyExpanded, setNearbyExpanded] = useState(false)
+  const [visitedMap, setVisitedMap] = useState({})
+
+  const iconCanvasRef = useRef(null)
 
   const hudHeadingRef = useRef(null)
   const hudGpsRef     = useRef(null)
@@ -27,6 +34,7 @@ export default function ARApp() {
   const dbgSensorRef  = useRef(null)
   const dbgCsvRef     = useRef(null)
   const dbgBannerRef  = useRef(null)
+  const dbgRouteRef   = useRef(null)
   const intervalRef   = useRef(null)
   const allTreasuresRef = useRef([])
 
@@ -35,6 +43,75 @@ export default function ARApp() {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [])
+
+  // 3D spheres icon on permission screen
+  useEffect(() => {
+    const canvas = iconCanvasRef.current
+    if (!canvas || screen !== 'permissions') return
+
+    const size = 140
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = size * dpr
+    canvas.height = size * dpr
+    canvas.style.width = size + 'px'
+    canvas.style.height = size + 'px'
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
+    renderer.setSize(size, size)
+    renderer.setPixelRatio(dpr)
+    renderer.setClearColor(0x000000, 0)
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100)
+    camera.position.set(0, 0, 6)
+
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2))
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0)
+    dirLight.position.set(3, 4, 5)
+    scene.add(dirLight)
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.5)
+    fillLight.position.set(-3, -2, 3)
+    scene.add(fillLight)
+
+    const spheres = []
+    const palette = [
+      { color: 0x4fffb0, pos: [0, 0, 0], r: 0.55 },
+      { color: 0xff3388, pos: [-1.1, 0.9, 0.3], r: 0.35 },
+      { color: 0x00ccff, pos: [1.05, 1.1, -0.2], r: 0.4 },
+      { color: 0xff8800, pos: [1.0, -0.9, 0.2], r: 0.35 },
+      { color: 0xcc44ff, pos: [-1.15, -0.75, -0.1], r: 0.28 },
+      { color: 0xffdd00, pos: [0, 1.5, -0.3], r: 0.22 },
+      { color: 0xff3388, pos: [1.5, 0.1, -0.4], r: 0.2 },
+      { color: 0x00ccff, pos: [-1.4, 0.05, 0.1], r: 0.22 },
+      { color: 0x4fffb0, pos: [0, -1.45, 0.15], r: 0.28 },
+    ]
+
+    for (const { color, pos, r } of palette) {
+      const geo = new THREE.SphereGeometry(r, 32, 32)
+      const mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.15, metalness: 0.0, clearcoat: 0.4, clearcoatRoughness: 0.1, emissive: color, emissiveIntensity: 0.35 })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(...pos)
+      scene.add(mesh)
+      spheres.push({ mesh, baseY: pos[1], phase: Math.random() * Math.PI * 2 })
+    }
+
+    let raf
+    function animate() {
+      raf = requestAnimationFrame(animate)
+      const t = Date.now() / 1000
+      for (const s of spheres) {
+        s.mesh.position.y = s.baseY + Math.sin(t * 0.8 + s.phase) * 0.08
+      }
+      scene.rotation.y = t * 0.15
+      renderer.render(scene, camera)
+    }
+    animate()
+
+    return () => {
+      cancelAnimationFrame(raf)
+      renderer.dispose()
+    }
+  }, [screen])
 
   function updateNearbyList() {
     if (!sensorState.gpsReady || !allTreasuresRef.current.length) return
@@ -47,14 +124,33 @@ export default function ARApp() {
     setNearbyMurals(withDist.slice(0, 10))
   }
 
-  function selectMural(mural) {
+  async function selectMural(mural) {
     if (selectedMural && selectedMural.name === mural.name) {
       // Deselect if tapping the same one
       setSelectedMural(null)
       setArrowTarget(null)
+      setRoutePath(null)
     } else {
       setSelectedMural(mural)
       setArrowTarget({ lat: mural.lat, lng: mural.lng, name: mural.name })
+      initAudio()  // start audio on user gesture (required by iOS)
+
+      // Fetch walking route and render path
+      if (sensorState.gpsReady) {
+        if (dbgRouteRef.current) dbgRouteRef.current.textContent = 'Route: fetching...'
+        try {
+          const route = await getWalkingRoute(sensorState.lat, sensorState.lng, mural.lat, mural.lng)
+          if (dbgRouteRef.current) dbgRouteRef.current.textContent = `Route: ${route.length} waypoints`
+          setRoutePath(route)
+        } catch (err) {
+          if (dbgRouteRef.current) dbgRouteRef.current.textContent = `Route: fallback (${err.message})`
+          // Fallback: straight line
+          setRoutePath([
+            { lat: sensorState.lat, lng: sensorState.lng },
+            { lat: mural.lat, lng: mural.lng },
+          ])
+        }
+      }
     }
   }
 
@@ -65,12 +161,12 @@ export default function ARApp() {
 
   async function handleGrant() {
     setBtnDisabled(true)
-    setBtnText('Setting up...')
+    setBtnText('Starting...')
 
     const perms = await requestAllPermissions(setPermStatus)
 
     if (!perms.camera) {
-      setPermStatus('❌ Camera is required. Please allow it in Settings.')
+      setPermStatus('Camera is required. Please allow it in Settings.')
       setBtnDisabled(false)
       setBtnText('Try again')
       return
@@ -139,8 +235,9 @@ export default function ARApp() {
       if (bd && dbgBannerRef.current) {
         dbgBannerRef.current.textContent = `Banner: ${bd.dist}m @ ${bd.bearing}° delta:${bd.delta}° pos:(${bd.x},${bd.z})`
       }
-      // Update nearby list every tick
+      // Update nearby list + visited state
       updateNearbyList()
+      setVisitedMap(getVisitedMap())
     }, 2000)
   }
 
@@ -150,12 +247,15 @@ export default function ARApp() {
       <div
         id="screen-permissions"
         className={`screen${screen === 'permissions' ? ' active' : ''}`}
-        style={{ flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#090912', padding: '2rem', textAlign: 'center' }}
+        style={{ flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f7f7fa', padding: '2rem', textAlign: 'center' }}
       >
         <div className="perm-content">
-          <div className="perm-icon">🧭</div>
+          <div className="perm-icon">
+            <canvas ref={iconCanvasRef} />
+          </div>
           <h1>Urban Treasures</h1>
-          <p>Needs camera, location, and motion sensor access to show AR overlays.</p>
+          <p className="perm-subtitle">Discover murals in augmented reality</p>
+          <p className="perm-desc">Requires camera, location, and motion sensors</p>
           <button className="btn-primary" disabled={btnDisabled} onClick={handleGrant}>
             {btnText}
           </button>
@@ -172,45 +272,75 @@ export default function ARApp() {
         {/* Layer 3: 2D HUD canvas (crosshair, warnings) */}
         <canvas ref={hudRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 3, pointerEvents: 'none' }} />
 
-        {/* Layer 5: Nearby murals menu */}
+        {/* Mute button */}
+        <button
+          className="mute-btn"
+          onClick={() => { const next = !muted; setMutedState(next); setMuted(next) }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            {muted ? (
+              <>
+                <line x1="23" y1="9" x2="17" y2="15" />
+                <line x1="17" y1="9" x2="23" y2="15" />
+              </>
+            ) : (
+              <>
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </>
+            )}
+          </svg>
+        </button>
+
+        {/* Layer 5: Nearby murals pill */}
         {nearbyMurals.length > 0 && (
-          <div className="nearby-menu">
-            <div className="nearby-header">Nearby murals</div>
-            <div className="nearby-scroll">
-              {nearbyMurals.map((m, i) => {
-                const isSelected = selectedMural && selectedMural.name === m.name
-                return (
-                  <div key={i} className="nearby-card" style={isSelected ? { border: '2px solid #4fffb0' } : undefined} onClick={() => selectMural(m)}>
-                    {m.photoUrl ? (
-                      <img className="nearby-card-img" src={m.photoUrl} alt={m.name} />
-                    ) : (
-                      <div className="nearby-card-img" />
-                    )}
-                    <div className="nearby-card-body">
-                      <div className="nearby-card-name">{m.name}</div>
-                      <div className="nearby-card-dist">{formatDist(m.dist)}</div>
+          <div className="nearby-wrap">
+            <button className="nearby-pill" onClick={() => setNearbyExpanded(!nearbyExpanded)}>
+              NEARBY · {nearbyMurals.length} {nearbyExpanded ? '▴' : '▾'}
+            </button>
+            {nearbyExpanded && (
+              <div className="nearby-dropdown">
+                {nearbyMurals.map((m, i) => {
+                  const isSelected = selectedMural && selectedMural.name === m.name
+                  const isVisited = visitedMap[m.name]
+                  const cardStyle = {
+                    ...(isSelected ? { border: '2px solid #fff' } : {}),
+                    ...(!isVisited ? { filter: 'grayscale(100%)' } : {}),
+                  }
+                  return (
+                    <div key={i} className="nearby-card" style={cardStyle} onClick={() => selectMural(m)}>
+                      {m.photoUrl ? (
+                        <img className="nearby-card-img" src={m.photoUrl} alt={m.name} />
+                      ) : (
+                        <div className="nearby-card-img" />
+                      )}
+                      <div className="nearby-card-body">
+                        <div className="nearby-card-name">{m.name}</div>
+                        <div className="nearby-card-dist">
+                          {formatDist(m.dist)}
+                          {isVisited && ' · Visited'}
+                        </div>
+                      </div>
+                      <button className="nearby-card-go" style={isSelected ? { background: '#ff3388', color: '#fff' } : undefined} onClick={(e) => { e.stopPropagation(); selectMural(m) }}>
+                        {isSelected ? 'Stop' : 'Go'}
+                      </button>
                     </div>
-                    <button className="nearby-card-go" style={isSelected ? { background: '#ff6b6b' } : undefined} onClick={(e) => { e.stopPropagation(); selectMural(m) }}>
-                      {isSelected ? 'Stop navigation' : 'Navigate'}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 
         {/* Layer 4: DOM HUD */}
-        <div className="hud-top" style={{ top: nearbyMurals.length > 0 ? '220px' : undefined }}>
-          <div className="hud-pill" ref={hudHeadingRef}>── °</div>
-          <div className="hud-pill" ref={hudGpsRef}>No GPS</div>
-        </div>
         <div className="hud-debug">
           <div ref={dbgHeadingRef}>Heading: –</div>
           <div ref={dbgGpsRef}>GPS: –</div>
           <div ref={dbgSensorRef}>Sensor: –</div>
           <div ref={dbgCsvRef}>CSV: waiting for GPS...</div>
           <div ref={dbgBannerRef}>Banner: –</div>
+          <div ref={dbgRouteRef}>Route: –</div>
         </div>
       </div>
     </>
