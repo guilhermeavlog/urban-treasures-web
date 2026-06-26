@@ -7,7 +7,6 @@ import { startCompass, startGPS, state as sensorState } from '@/lib/ar/sensors'
 import { attachCamera } from '@/lib/ar/camera'
 import { initRenderer, startRenderLoop, setSpawnPoint, placeBanner, getBannerDebug, setArrowTarget, getArrowTarget, getVisitedMap, setRoutePath, initAudio, setMuted, isMuted } from '@/lib/ar/renderer'
 import { initHUD, startHUDLoop } from '@/lib/ar/renderer2d'
-import { parseCSV } from '@/lib/csv'
 import { getDistance } from '@/lib/geo/bearing'
 import { getWalkingRoute } from '@/lib/geo/routing'
 
@@ -32,7 +31,7 @@ export default function ARApp() {
   const dbgHeadingRef = useRef(null)
   const dbgGpsRef     = useRef(null)
   const dbgSensorRef  = useRef(null)
-  const dbgCsvRef     = useRef(null)
+  const dbgDbRef     = useRef(null)
   const dbgBannerRef  = useRef(null)
   const dbgRouteRef   = useRef(null)
   const intervalRef   = useRef(null)
@@ -231,33 +230,25 @@ export default function ARApp() {
 
     setScreen('ar')
 
-    // Wait for GPS to lock, then load treasures from CSV
+    // Wait for GPS to lock, then load treasures from database
     const spawnPoll = setInterval(async () => {
       if (sensorState.gpsReady) {
         clearInterval(spawnPoll)
         setSpawnPoint(sensorState.lat, sensorState.lng)
 
         try {
-          if (dbgCsvRef.current) dbgCsvRef.current.textContent = 'CSV: fetching...'
-          const res = await fetch('/treasures.csv')
-          const text = await res.text()
-          const treasures = parseCSV(text)
-          const parsed = treasures.map(t => ({
-            lat: parseFloat(t.lat),
-            lng: parseFloat(t.lng),
-            name: t.name,
-            description: t.description,
-            photoUrl: t.photoUrl || '',
-          }))
+          if (dbgDbRef.current) dbgDbRef.current.textContent = 'DB: fetching...'
+          const res = await fetch('/api/murals')
+          const parsed = await res.json()
           allTreasuresRef.current = parsed
-          if (dbgCsvRef.current) dbgCsvRef.current.textContent = `CSV: ${parsed.length} treasures loaded`
+          if (dbgDbRef.current) dbgDbRef.current.textContent = `DB: ${parsed.length} treasures loaded`
           for (const t of parsed) {
             placeBanner(t)
           }
-          if (dbgCsvRef.current) dbgCsvRef.current.textContent = `CSV: ${parsed.length} banners placed`
+          if (dbgDbRef.current) dbgDbRef.current.textContent = `DB: ${parsed.length} banners placed`
           updateNearbyList()
         } catch (err) {
-          if (dbgCsvRef.current) dbgCsvRef.current.textContent = `CSV: ERROR ${err.message}`
+          if (dbgDbRef.current) dbgDbRef.current.textContent = `DB: ERROR ${err.message}`
         }
       }
     }, 200)
@@ -385,7 +376,7 @@ export default function ARApp() {
           <div ref={dbgHeadingRef}>Heading: –</div>
           <div ref={dbgGpsRef}>GPS: –</div>
           <div ref={dbgSensorRef}>Sensor: –</div>
-          <div ref={dbgCsvRef}>CSV: waiting for GPS...</div>
+          <div ref={dbgDbRef}>CSV: waiting for GPS...</div>
           <div ref={dbgBannerRef}>Banner: –</div>
           <div ref={dbgRouteRef}>Route: –</div>
         </div>
