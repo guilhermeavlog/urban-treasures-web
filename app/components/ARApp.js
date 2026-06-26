@@ -239,6 +239,7 @@ export default function ARApp() {
         try {
           if (dbgDbRef.current) dbgDbRef.current.textContent = 'DB: fetching...'
           const res = await fetch('/api/murals')
+          if (!res.ok) throw new Error(`API ${res.status}`)
           const parsed = await res.json()
           allTreasuresRef.current = parsed
           if (dbgDbRef.current) dbgDbRef.current.textContent = `DB: ${parsed.length} treasures loaded`
