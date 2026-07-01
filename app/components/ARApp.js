@@ -345,7 +345,6 @@ export default function ARApp() {
                   const isVisited = visitedMap[m.name]
                   const cardStyle = {
                     ...(isSelected ? { border: '2px solid #fff' } : {}),
-                    ...(!isVisited ? { filter: 'grayscale(100%)' } : {}),
                   }
                   return (
                     <div key={i} className="nearby-card" style={cardStyle} onClick={() => selectMural(m)}>
