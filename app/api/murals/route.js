@@ -10,17 +10,19 @@ export async function GET() {
         lat DOUBLE PRECISION NOT NULL,
         lng DOUBLE PRECISION NOT NULL,
         description TEXT,
-        photo_url TEXT
+        photo_url TEXT,
+        city TEXT
       )
     `)
 
-    const { rows } = await pool.query('SELECT name, lat, lng, description, photo_url FROM murals')
+    const { rows } = await pool.query('SELECT name, lat, lng, description, photo_url, city FROM murals')
     const murals = rows.map(r => ({
       name: r.name,
       lat: r.lat,
       lng: r.lng,
       description: r.description,
       photoUrl: r.photo_url,
+      city: r.city,
     }))
     return Response.json(murals)
   } catch (err) {
